@@ -34,8 +34,7 @@ namespace image_view
 
 VideoRecorderNode::VideoRecorderNode(const rclcpp::NodeOptions & options)
 : rclcpp::Node("video_recorder_node", options),
-  g_count(0),
-  g_last_wrote_time(rclcpp::Time((int64_t) 0, RCL_ROS_TIME)),
+  frames_written_(0),
   recording_started(false)
 {
   bool stamped_filename;
@@ -104,6 +103,7 @@ void VideoRecorderNode::callback(const sensor_msgs::msg::Image::ConstSharedPtr &
       rclcpp::shutdown();
     }
 
+    stream_start_time_ = rclcpp::Time {image_msg->header.stamp, RCL_ROS_TIME};
     recording_started = true;
 
     RCLCPP_INFO(
@@ -112,38 +112,36 @@ void VideoRecorderNode::callback(const sensor_msgs::msg::Image::ConstSharedPtr &
       codec.c_str(), size.height, size.width, fps);
   }
 
-  if (
-    (rclcpp::Time(image_msg->header.stamp, RCL_ROS_TIME) - g_last_wrote_time) <
-    rclcpp::Duration::from_seconds(1.0 / fps))
+  auto const time_since_stream_start = rclcpp::Time(image_msg->header.stamp, RCL_ROS_TIME) - *stream_start_time_;
+  auto const expected_number_of_frames = fps * time_since_stream_start.nanoseconds() / 1'000'000'000;
+
+  // Try to achieve correct fps
+  if (expected_number_of_frames > frames_written_)
   {
-    // Skip to get video with correct fps
-    return;
-  }
+    try {
+      cv_bridge::CvtColorForDisplayOptions options;
+      options.do_dynamic_scaling = use_dynamic_range;
+      options.min_image_value = min_depth_range;
+      options.max_image_value = max_depth_range;
+      options.colormap = colormap;
 
-  try {
-    cv_bridge::CvtColorForDisplayOptions options;
-    options.do_dynamic_scaling = use_dynamic_range;
-    options.min_image_value = min_depth_range;
-    options.max_image_value = max_depth_range;
-    options.colormap = colormap;
+      const cv::Mat image =
+        cv_bridge::cvtColorForDisplay(cv_bridge::toCvShare(image_msg), encoding, options)->image;
 
-    const cv::Mat image =
-      cv_bridge::cvtColorForDisplay(cv_bridge::toCvShare(image_msg), encoding, options)->image;
-
-    if (!image.empty()) {
-      outputVideo << image;
-      RCLCPP_INFO(this->get_logger(), "Recording frame %i\x1b[1F", g_count);
-      g_count++;
-      g_last_wrote_time = rclcpp::Time(image_msg->header.stamp, RCL_ROS_TIME);
-    } else {
-      RCLCPP_WARN(this->get_logger(), "Frame skipped, no data!");
+      if (!image.empty()) {
+        outputVideo << image;
+        RCLCPP_INFO(this->get_logger(), "Recording frame %i\x1b[1F", frames_written_);
+        frames_written_++;
+      } else {
+        RCLCPP_WARN(this->get_logger(), "Frame skipped, no data!");
+      }
+    } catch (const cv_bridge::Exception &) {
+      RCLCPP_ERROR(
+        this->get_logger(),
+        "Unable to convert %s image to %s",
+        image_msg->encoding.c_str(), encoding.c_str());
+      return;
     }
-  } catch (const cv_bridge::Exception &) {
-    RCLCPP_ERROR(
-      this->get_logger(),
-      "Unable to convert %s image to %s",
-      image_msg->encoding.c_str(), encoding.c_str());
-    return;
   }
 }
 

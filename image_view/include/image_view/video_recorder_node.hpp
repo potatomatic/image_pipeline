@@ -22,6 +22,8 @@
 
 #include <opencv2/highgui/highgui.hpp>
 
+#include <optional>
+
 namespace image_view
 {
 
@@ -39,8 +41,8 @@ public:
 private:
   cv::VideoWriter outputVideo;
 
-  int g_count;
-  rclcpp::Time g_last_wrote_time;
+  int frames_written_;
+  std::optional<rclcpp::Time> stream_start_time_;
   std::string encoding;
   std::string codec;
   int fps;
